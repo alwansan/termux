@@ -28,6 +28,7 @@ jobs:
         env:
           PACKAGE_VARIANT: apt-android-7
         run: |
+          set -x
           exit_on_error() { echo "$1"; exit 1; }
 
           echo "Setting vars"
@@ -51,15 +52,24 @@ jobs:
           echo "APK_VERSION_TAG=$APK_VERSION_TAG" >> $GITHUB_ENV
           echo "APK_BASENAME_PREFIX=$APK_BASENAME_PREFIX" >> $GITHUB_ENV
 
-          echo "Building APK for 'APK_VERSION_TAG' build"
+          echo "Building APK for '$APK_VERSION_TAG' build"
           export TERMUX_APP_VERSION_NAME="${RELEASE_VERSION_NAME/v/}"
           export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
           export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
-          if ! ./gradlew assembleDebug; then
+          GRADLE_OUTPUT=$(./gradlew assembleDebug --stacktrace --info 2>&1)
+          GRADLE_EXIT=$?
+          echo "$GRADLE_OUTPUT"
+          if [ $GRADLE_EXIT -ne 0 ]; then
+            echo "=== Gradle output saved to GITHUB_STEP_SUMMARY ==="
+            echo "## Gradle Build Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$GRADLE_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
             exit_on_error "Build failed for '$APK_VERSION_TAG' build."
           fi
 
           echo "Validating APK"
+          ls -la "$APK_DIR_PATH/" || true
           if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk"; then
             files_found="$(ls "$APK_DIR_PATH")"
             exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk'. Files found: "$'\n'"$files_found"
