@@ -28,7 +28,6 @@ jobs:
         env:
           PACKAGE_VARIANT: apt-android-7
         run: |
-          set -x
           exit_on_error() { echo "$1"; exit 1; }
 
           echo "Setting vars"
@@ -56,20 +55,14 @@ jobs:
           export TERMUX_APP_VERSION_NAME="${RELEASE_VERSION_NAME/v/}"
           export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
           export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
-          GRADLE_OUTPUT=$(./gradlew assembleDebug --stacktrace --info 2>&1)
+          mkdir -p "$APK_DIR_PATH"
+          ./gradlew assembleDebug --stacktrace --info 2>&1 | tee "$APK_DIR_PATH/build.log"
           GRADLE_EXIT=$?
-          echo "$GRADLE_OUTPUT"
           if [ $GRADLE_EXIT -ne 0 ]; then
-            echo "=== Gradle output saved to GITHUB_STEP_SUMMARY ==="
-            echo "## Gradle Build Log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$GRADLE_OUTPUT" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
             exit_on_error "Build failed for '$APK_VERSION_TAG' build."
           fi
 
           echo "Validating APK"
-          ls -la "$APK_DIR_PATH/" || true
           if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk"; then
             files_found="$(ls "$APK_DIR_PATH")"
             exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk'. Files found: "$'\n'"$files_found"
@@ -80,7 +73,16 @@ jobs:
             exit_on_error "Generate sha256sum failed for '$APK_VERSION_TAG' build."
           fi
 
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log
+          path: |
+            ${{ env.APK_DIR_PATH }}/build.log
+
       - name: Attach arm64-v8a APK
+        if: success()
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.APK_BASENAME_PREFIX }}_arm64-v8a
@@ -89,6 +91,7 @@ jobs:
             ${{ env.APK_DIR_PATH }}/output-metadata.json
 
       - name: Attach sha256sums
+        if: success()
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.APK_BASENAME_PREFIX }}_sha256sums
