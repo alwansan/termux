@@ -81,58 +81,57 @@ jobs:
             exit_on_error "Build failed (exit: $GRADLE_EXIT)"
           fi
 
-      - name: Check gh
+      - name: Upload APK
         if: success()
         shell: bash {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "## gh check" >> $GITHUB_STEP_SUMMARY
-          echo "gh: $(which gh 2>&1)" >> $GITHUB_STEP_SUMMARY
-          echo "version: $(gh --version 2>&1)" >> $GITHUB_STEP_SUMMARY
-          echo "auth: $(gh auth status 2>&1)" >> $GITHUB_STEP_SUMMARY
-          echo "token: ${GITHUB_TOKEN:0:4}..." >> $GITHUB_STEP_SUMMARY
-          echo "repo: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
-
-      - name: Create Release
-        if: success()
-        shell: bash {0}
-        run: |
-          set -x
           APK_FILE=$(find . -name '*arm64-v8a*.apk' -type f | head -1)
-          echo "APK_FILE=$APK_FILE" >> $GITHUB_STEP_SUMMARY
-          [ -n "$APK_FILE" ] && echo "size: $(stat -c%s "$APK_FILE")" >> $GITHUB_STEP_SUMMARY
-
-          TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
-          echo "TAG=$TAG" >> $GITHUB_STEP_SUMMARY
-
-          gh api \
-            --method POST \
-            /repos/${{ github.repository }}/releases \
-            -f tag_name="$TAG" \
-            -f name="Debug APK ${GITHUB_SHA:0:7}" \
-            -f target_commitish="$GITHUB_SHA" \
-            -f draft=true \
-            2>&1 | tee -a $GITHUB_STEP_SUMMARY
-          echo "exit: $?" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload APK Asset
-        if: success()
-        shell: bash {0}
-        run: |
-          set -x
-          APK_FILE=$(find . -name '*arm64-v8a*.apk' -type f | head -1)
-          [ -z "$APK_FILE" ] && { echo "No APK" >> $GITHUB_STEP_SUMMARY; exit 1; }
+          if [ -z "$APK_FILE" ]; then
+            echo "No arm64-v8a APK found" >> $GITHUB_STEP_SUMMARY
+            find . -name '*.apk' -type f >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo "APK: $APK_FILE ($(stat -c%s "$APK_FILE") bytes)" >> $GITHUB_STEP_SUMMARY
 
           SHA256_FILE="${APK_FILE}.sha256"
-          (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
+          (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")") || exit 1
 
           TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
-          echo "Uploading assets for tag=$TAG" >> $GITHUB_STEP_SUMMARY
 
-          gh release upload "$TAG" \
+          echo "Creating release and uploading assets..." >> $GITHUB_STEP_SUMMARY
+
+          gh release create "$TAG" \
             --repo ${{ github.repository }} \
+            --title "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" \
+            --notes "Automated debug build for commit $GITHUB_SHA" \
+            --draft \
             "$APK_FILE" \
-            "$SHA256_FILE" \
-            2>&1 | tee -a $GITHUB_STEP_SUMMARY
-          echo "upload_exit: $?" >> $GITHUB_STEP_SUMMARY
+            "$SHA256_FILE" 2>&1
+          RC=$?
+
+          echo "gh release create exit code: $RC" >> $GITHUB_STEP_SUMMARY
+
+          if [ $RC -ne 0 ]; then
+            echo "gh failed, trying curl..." >> $GITHUB_STEP_SUMMARY
+            API_JSON=$(cat <<ENDOFJSON
+      {"tag_name":"$TAG","name":"Debug APK ${GITHUB_SHA:0:7}","draft":true,"target_commitish":"$GITHUB_SHA"}
+ENDOFJSON
+)
+            UPLOAD_URL=$(curl -s -L -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases" \
+              -d "$API_JSON" | tee -a $GITHUB_STEP_SUMMARY | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('upload_url','').split('{')[0])" 2>/dev/null)
+            echo "upload_url=$UPLOAD_URL" >> $GITHUB_STEP_SUMMARY
+            if [ -n "$UPLOAD_URL" ] && [ "$UPLOAD_URL" != "None" ]; then
+              curl -s -L -X POST \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Content-Type: application/vnd.android.package-archive" \
+                "$UPLOAD_URL?name=$(basename $APK_FILE)" \
+                --data-binary "@$APK_FILE" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
 
           echo "Draft release: https://github.com/${{ github.repository }}/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
