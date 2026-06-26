@@ -15,13 +15,17 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v6
+        run: |
+          git init .
+          git remote add origin https://github.com/${{ github.repository }}.git
+          git fetch origin ${{ github.ref_name }}
+          git checkout -b ${{ github.ref_name }} FETCH_HEAD
 
       - name: Setup java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openjdk-17-jdk
+          java -version
 
       - name: Build APK
         shell: bash {0}
@@ -56,13 +60,10 @@ jobs:
           export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
           export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
           mkdir -p "$APK_DIR_PATH"
+          chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace --info 2>&1 | tee "$APK_DIR_PATH/build.log"
           GRADLE_EXIT=$?
           if [ $GRADLE_EXIT -ne 0 ]; then
-            echo "### Gradle Build Output" >> $GITHUB_STEP_SUMMARY
-            echo '"'\'\'\'' >> $GITHUB_STEP_SUMMARY
-            cat "$APK_DIR_PATH/build.log" >> $GITHUB_STEP_SUMMARY
-            echo '"'\'\'\'' >> $GITHUB_STEP_SUMMARY
             exit_on_error "Build failed for '$APK_VERSION_TAG' build."
           fi
 
@@ -79,26 +80,12 @@ jobs:
 
       - name: Upload build log
         if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: build-log
-          path: |
-            ${{ env.APK_DIR_PATH }}/build.log
+        run: |
+          echo 'Build log (if available):'
+          test -f "${{ env.APK_DIR_PATH }}/build.log" && tail -100 "${{ env.APK_DIR_PATH }}/build.log" || echo "No build log found"
 
-      - name: Attach arm64-v8a APK
+      - name: Show APK info
         if: success()
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ env.APK_BASENAME_PREFIX }}_arm64-v8a
-          path: |
-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_arm64-v8a.apk
-            ${{ env.APK_DIR_PATH }}/output-metadata.json
-
-      - name: Attach sha256sums
-        if: success()
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ env.APK_BASENAME_PREFIX }}_sha256sums
-          path: |
-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_sha256sums
-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+        run: |
+          echo "Build successful! APK location:"
+          ls -la "${{ env.APK_DIR_PATH }}/" 2>/dev/null || echo "APK directory not found"
