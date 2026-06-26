@@ -92,77 +92,35 @@ jobs:
 
       - name: Upload APK
         if: success()
+        shell: bash {0}
         run: |
-          set -x
-          echo "=== gh check ===" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-          which gh
-          gh --version
-          gh auth status 2>&1 || echo "NOT AUTHED"
-
-          echo "=== Token test ===" >> $GITHUB_STEP_SUMMARY
-          curl -s -H "Authorization: Bearer ${{ github.token }}" \
-            "https://api.github.com/repos/${{ github.repository }}" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"Repo: {d.get('full_name')} - {d.get('permissions',{})}\")" 2>&1
-
-          echo "=== Find APK ===" >> $GITHUB_STEP_SUMMARY
           APK_FILE=$(find . -name '*.apk' -type f | head -1)
           if [ -z "$APK_FILE" ]; then
-            echo "ERROR: No APK found"
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "No APK found" >> $GITHUB_STEP_SUMMARY
+            echo "FALSE"
             exit 1
           fi
-          echo "APK: $APK_FILE ($(stat -c%s "$APK_FILE") bytes)"
+          echo "APK: $APK_FILE" >> $GITHUB_STEP_SUMMARY
 
           SHA256_FILE="${APK_FILE}.sha256"
           (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
-          cat "$SHA256_FILE"
 
           TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
 
-          echo "=== Create release ===" >> $GITHUB_STEP_SUMMARY
-          JSON=$(jq -n \
-            --arg tag "$TAG" \
-            --arg name "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" \
-            --arg body "Automated debug build for commit $GITHUB_SHA" \
-            '{tag_name: $tag, name: $name, body: $body, draft: true}')
+          echo "Release tag: $TAG" >> $GITHUB_STEP_SUMMARY
 
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/releases" \
-            -d "$JSON")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-          echo "HTTP $HTTP_CODE"
-
-          if [ "$HTTP_CODE" != "201" ]; then
-            echo "RELEASE FAILED: $HTTP_CODE"
-            echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print('Msg:', d.get('message','')); print('Err:', d.get('errors',''))" 2>/dev/null
-            echo '```' >> $GITHUB_STEP_SUMMARY
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh not found" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
-          RELEASE_ID=$(echo "$BODY" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-          echo "Release ID: $RELEASE_ID"
+          if ! gh auth status >/dev/null 2>&1; then
+            echo "NOT AUTHED" >> $GITHUB_STEP_SUMMARY
+          fi
 
-          echo "=== Upload APK ===" >> $GITHUB_STEP_SUMMARY
-          curl -s -o /dev/null -w "APK upload: %{http_code}\n" \
-            -X POST \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Content-Type: application/vnd.android.package-archive" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=$(basename ${APK_FILE})" \
-            --data-binary "@${APK_FILE}"
-
-          echo "=== Upload SHA ===" >> $GITHUB_STEP_SUMMARY
-          curl -s -o /dev/null -w "SHA upload: %{http_code}\n" \
-            -X POST \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Content-Type: text/plain" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=$(basename ${SHA256_FILE})" \
-            --data-binary "@${SHA256_FILE}"
-
-          echo "SUCCESS: https://github.com/${{ github.repository }}/releases/tag/$TAG"
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          gh release create "$TAG" \
+            --repo ${{ github.repository }} \
+            --title "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" \
+            --notes "Automated debug build for commit $GITHUB_SHA" \
+            "$APK_FILE" \
+            "$SHA256_FILE"
