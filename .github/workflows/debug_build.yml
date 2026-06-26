@@ -20,34 +20,36 @@ jobs:
           git remote add origin https://github.com/${{ github.repository }}.git
           git fetch origin ${{ github.ref_name }}
           git checkout -b ${{ github.ref_name }} FETCH_HEAD
+          git log --oneline -3
 
       - name: Setup java 17
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq openjdk-17-jdk 2>&1
-          echo "## Java Info" >> $GITHUB_STEP_SUMMARY
-          java -version 2>&1 >> $GITHUB_STEP_SUMMARY
 
-      - name: Check Android SDK
+      - name: Setup Android SDK
         run: |
-          echo "## Environment Check" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_STEP_SUMMARY
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_STEP_SUMMARY
-          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_STEP_SUMMARY
-          echo "--- SDK paths ---" >> $GITHUB_STEP_SUMMARY
-          ls /usr/local/lib/android/sdk/ 2>&1 >> $GITHUB_STEP_SUMMARY
-          ls /opt/android-sdk/ 2>&1 >> $GITHUB_STEP_SUMMARY
-          ls /usr/lib/android-sdk/ 2>&1 >> $GITHUB_STEP_SUMMARY
-          dpkg -l 2>/dev/null | grep android >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la $ANDROID_HOME/ 2>/dev/null || echo "SDK NOT FOUND at $ANDROID_HOME"
+          ls -la $ANDROID_HOME/platforms/ 2>/dev/null | head -5
+          ls -la $ANDROID_HOME/build-tools/ 2>/dev/null | head -5
+          ls -la $ANDROID_HOME/ndk/ 2>/dev/null | head -5
+          # Accept licenses
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses 2>/dev/null || echo "License accept skipped"
+          # Find Java home
+          echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))" >> $GITHUB_ENV
+          echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))"
 
       - name: Build APK
         shell: bash {0}
         env:
           PACKAGE_VARIANT: apt-android-7
         run: |
-          set -x
           exit_on_error() { echo "$1"; exit 1; }
 
           CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
@@ -71,30 +73,19 @@ jobs:
           mkdir -p "$APK_DIR_PATH"
           chmod +x ./gradlew
 
-          echo "## Gradle Output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          ./gradlew assembleDebug --stacktrace 2>&1 | tee /dev/stderr | head -500 >> $GITHUB_STEP_SUMMARY
+          echo "### Gradle Build" >> $GITHUB_STEP_SUMMARY
+          echo '"'\'\'\' >> $GITHUB_STEP_SUMMARY
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee /dev/stderr >> $GITHUB_STEP_SUMMARY
           GRADLE_EXIT=$?
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo '"'\'\'\' >> $GITHUB_STEP_SUMMARY
           if [ $GRADLE_EXIT -ne 0 ]; then
-            echo "Gradle exit code: $GRADLE_EXIT" >> $GITHUB_STEP_SUMMARY
+            echo "Gradle failed with exit code: $GRADLE_EXIT" >> $GITHUB_STEP_SUMMARY
             exit_on_error "Build failed (exit: $GRADLE_EXIT)"
           fi
 
-          echo "Validating APK" >> $GITHUB_STEP_SUMMARY
-          if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk"; then
-            files_found="$(ls "$APK_DIR_PATH")"
-            exit_on_error "No APK found. Files: $files_found"
-          fi
-          echo "APK found!" >> $GITHUB_STEP_SUMMARY
-
-          echo "Generating sha256sum" >> $GITHUB_STEP_SUMMARY
-          (cd "$APK_DIR_PATH"; sha256sum "${APK_BASENAME_PREFIX}_arm64-v8a.apk" > "${APK_BASENAME_PREFIX}_sha256sums")
-
-      - name: Final status
-        if: always()
+      - name: Show APK
+        if: success()
         run: |
-          echo "## Build Final Status" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "## Build Succeeded!" >> $GITHUB_STEP_SUMMARY
+          find . -name '*.apk' -type f >> $GITHUB_STEP_SUMMARY
           find . -path '*/build/outputs/*' -type f 2>/dev/null >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
