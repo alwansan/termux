@@ -24,47 +24,37 @@ jobs:
       - name: Setup java 17
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openjdk-17-jdk
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
+          sudo apt-get install -y -qq openjdk-17-jdk 2>&1
+          echo "## Java Info" >> $GITHUB_STEP_SUMMARY
+          java -version 2>&1 >> $GITHUB_STEP_SUMMARY
 
-      - name: Check environment
+      - name: Check Android SDK
         run: |
-          echo "=== Android SDK ==="
-          ls -la /usr/local/lib/android/sdk/ 2>/dev/null || echo "No default SDK"
-          ls -la /opt/android-sdk/ 2>/dev/null || echo "No /opt/android-sdk"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "JAVA_HOME=$JAVA_HOME"
-          which java
-          java -version 2>&1
-          echo "=== Memory ==="
-          free -h
-          echo "=== Disk ==="
-          df -h / | tail -1
+          echo "## Environment Check" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_STEP_SUMMARY
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_STEP_SUMMARY
+          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_STEP_SUMMARY
+          echo "--- SDK paths ---" >> $GITHUB_STEP_SUMMARY
+          ls /usr/local/lib/android/sdk/ 2>&1 >> $GITHUB_STEP_SUMMARY
+          ls /opt/android-sdk/ 2>&1 >> $GITHUB_STEP_SUMMARY
+          ls /usr/lib/android-sdk/ 2>&1 >> $GITHUB_STEP_SUMMARY
+          dpkg -l 2>/dev/null | grep android >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Build APK
         shell: bash {0}
         env:
           PACKAGE_VARIANT: apt-android-7
-          ANDROID_HOME: /usr/local/lib/android/sdk
-          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
+          set -x
           exit_on_error() { echo "$1"; exit 1; }
-
-          echo "Setting vars"
-
-          if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
-              GITHUB_SHA="${{ github.event.pull_request.head.sha }}"
-          fi
 
           CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
           CURRENT_VERSION_NAME="$(grep -m 1 -E "$CURRENT_VERSION_NAME_REGEX" ./app/build.gradle | sed -r "s/$CURRENT_VERSION_NAME_REGEX/\1/")"
-          echo "CURRENT_VERSION_NAME=$CURRENT_VERSION_NAME"
           RELEASE_VERSION_NAME="v$CURRENT_VERSION_NAME+${GITHUB_SHA:0:7}"
-          echo "RELEASE_VERSION_NAME=$RELEASE_VERSION_NAME"
           if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
-           exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec."
+           exit_on_error "Version check failed"
           fi
 
           APK_DIR_PATH="./app/build/outputs/apk/debug"
@@ -75,47 +65,36 @@ jobs:
           echo "APK_VERSION_TAG=$APK_VERSION_TAG" >> $GITHUB_ENV
           echo "APK_BASENAME_PREFIX=$APK_BASENAME_PREFIX" >> $GITHUB_ENV
 
-          echo "Building APK for '$APK_VERSION_TAG' build"
           export TERMUX_APP_VERSION_NAME="${RELEASE_VERSION_NAME/v/}"
           export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
           export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
-          export ANDROID_HOME="/usr/local/lib/android/sdk"
-          export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
           mkdir -p "$APK_DIR_PATH"
           chmod +x ./gradlew
 
-          echo "=== Running Gradle ==="
-          ./gradlew assembleDebug --stacktrace --info 2>&1 | tee "$APK_DIR_PATH/build.log"
+          echo "## Gradle Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee /dev/stderr | head -500 >> $GITHUB_STEP_SUMMARY
           GRADLE_EXIT=$?
+          echo '```' >> $GITHUB_STEP_SUMMARY
           if [ $GRADLE_EXIT -ne 0 ]; then
-            echo "### Gradle Error Output (last 200 lines)" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -200 "$APK_DIR_PATH/build.log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit_on_error "Build failed for '$APK_VERSION_TAG' build (exit code: $GRADLE_EXIT)."
+            echo "Gradle exit code: $GRADLE_EXIT" >> $GITHUB_STEP_SUMMARY
+            exit_on_error "Build failed (exit: $GRADLE_EXIT)"
           fi
 
-          echo "Validating APK"
+          echo "Validating APK" >> $GITHUB_STEP_SUMMARY
           if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk"; then
             files_found="$(ls "$APK_DIR_PATH")"
-            exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk'. Files found: "$'\n'"$files_found"
+            exit_on_error "No APK found. Files: $files_found"
           fi
+          echo "APK found!" >> $GITHUB_STEP_SUMMARY
 
-          echo "Generating sha256sum"
-          if ! (cd "$APK_DIR_PATH"; sha256sum "${APK_BASENAME_PREFIX}_arm64-v8a.apk" > "${APK_BASENAME_PREFIX}_sha256sums"); then
-            exit_on_error "Generate sha256sum failed for '$APK_VERSION_TAG' build."
-          fi
+          echo "Generating sha256sum" >> $GITHUB_STEP_SUMMARY
+          (cd "$APK_DIR_PATH"; sha256sum "${APK_BASENAME_PREFIX}_arm64-v8a.apk" > "${APK_BASENAME_PREFIX}_sha256sums")
 
-      - name: Build log dump
+      - name: Final status
         if: always()
         run: |
-          echo "=== Build log (if exists) ==="
-          if [ -f "${{ env.APK_DIR_PATH }}/build.log" ]; then
-            wc -l "${{ env.APK_DIR_PATH }}/build.log"
-            tail -200 "${{ env.APK_DIR_PATH }}/build.log"
-          else
-            echo "No build.log found"
-            find "${{ env.APK_DIR_PATH }}" -type f 2>/dev/null || echo "No files in APK_DIR_PATH"
-          fi
-          echo "=== Gradle cache ==="
-          ls ~/.gradle/ 2>/dev/null || echo "No gradle cache"
+          echo "## Build Final Status" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          find . -path '*/build/outputs/*' -type f 2>/dev/null >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
