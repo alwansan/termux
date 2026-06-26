@@ -25,12 +25,30 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq openjdk-17-jdk
+          echo "JAVA_HOME=$JAVA_HOME"
           java -version
+
+      - name: Check environment
+        run: |
+          echo "=== Android SDK ==="
+          ls -la /usr/local/lib/android/sdk/ 2>/dev/null || echo "No default SDK"
+          ls -la /opt/android-sdk/ 2>/dev/null || echo "No /opt/android-sdk"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "JAVA_HOME=$JAVA_HOME"
+          which java
+          java -version 2>&1
+          echo "=== Memory ==="
+          free -h
+          echo "=== Disk ==="
+          df -h / | tail -1
 
       - name: Build APK
         shell: bash {0}
         env:
           PACKAGE_VARIANT: apt-android-7
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
           exit_on_error() { echo "$1"; exit 1; }
 
@@ -42,7 +60,9 @@ jobs:
 
           CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
           CURRENT_VERSION_NAME="$(grep -m 1 -E "$CURRENT_VERSION_NAME_REGEX" ./app/build.gradle | sed -r "s/$CURRENT_VERSION_NAME_REGEX/\1/")"
+          echo "CURRENT_VERSION_NAME=$CURRENT_VERSION_NAME"
           RELEASE_VERSION_NAME="v$CURRENT_VERSION_NAME+${GITHUB_SHA:0:7}"
+          echo "RELEASE_VERSION_NAME=$RELEASE_VERSION_NAME"
           if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
            exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec."
           fi
@@ -59,12 +79,20 @@ jobs:
           export TERMUX_APP_VERSION_NAME="${RELEASE_VERSION_NAME/v/}"
           export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
           export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
+          export ANDROID_HOME="/usr/local/lib/android/sdk"
+          export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
           mkdir -p "$APK_DIR_PATH"
           chmod +x ./gradlew
+
+          echo "=== Running Gradle ==="
           ./gradlew assembleDebug --stacktrace --info 2>&1 | tee "$APK_DIR_PATH/build.log"
           GRADLE_EXIT=$?
           if [ $GRADLE_EXIT -ne 0 ]; then
-            exit_on_error "Build failed for '$APK_VERSION_TAG' build."
+            echo "### Gradle Error Output (last 200 lines)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -200 "$APK_DIR_PATH/build.log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit_on_error "Build failed for '$APK_VERSION_TAG' build (exit code: $GRADLE_EXIT)."
           fi
 
           echo "Validating APK"
@@ -78,14 +106,16 @@ jobs:
             exit_on_error "Generate sha256sum failed for '$APK_VERSION_TAG' build."
           fi
 
-      - name: Upload build log
+      - name: Build log dump
         if: always()
         run: |
-          echo 'Build log (if available):'
-          test -f "${{ env.APK_DIR_PATH }}/build.log" && tail -100 "${{ env.APK_DIR_PATH }}/build.log" || echo "No build log found"
-
-      - name: Show APK info
-        if: success()
-        run: |
-          echo "Build successful! APK location:"
-          ls -la "${{ env.APK_DIR_PATH }}/" 2>/dev/null || echo "APK directory not found"
+          echo "=== Build log (if exists) ==="
+          if [ -f "${{ env.APK_DIR_PATH }}/build.log" ]; then
+            wc -l "${{ env.APK_DIR_PATH }}/build.log"
+            tail -200 "${{ env.APK_DIR_PATH }}/build.log"
+          else
+            echo "No build.log found"
+            find "${{ env.APK_DIR_PATH }}" -type f 2>/dev/null || echo "No files in APK_DIR_PATH"
+          fi
+          echo "=== Gradle cache ==="
+          ls ~/.gradle/ 2>/dev/null || echo "No gradle cache"
