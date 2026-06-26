@@ -92,35 +92,43 @@ jobs:
 
       - name: Upload APK
         if: success()
-        shell: bash {0}
         run: |
           APK_FILE=$(find . -name '*.apk' -type f | head -1)
           if [ -z "$APK_FILE" ]; then
-            echo "No APK found" >> $GITHUB_STEP_SUMMARY
-            echo "FALSE"
             exit 1
           fi
-          echo "APK: $APK_FILE" >> $GITHUB_STEP_SUMMARY
 
           SHA256_FILE="${APK_FILE}.sha256"
           (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
 
           TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
 
-          echo "Release tag: $TAG" >> $GITHUB_STEP_SUMMARY
-
-          if ! command -v gh >/dev/null 2>&1; then
-            echo "gh not found" >> $GITHUB_STEP_SUMMARY
-            exit 1
+          # Try creating release with minimal flags
+          if command -v gh >/dev/null 2>&1; then
+            if gh auth status >/dev/null 2>&1; then
+              gh release create "$TAG" "$APK_FILE" "$SHA256_FILE" --repo ${{ github.repository }} --generate-notes && exit 0
+            fi
           fi
 
-          if ! gh auth status >/dev/null 2>&1; then
-            echo "NOT AUTHED" >> $GITHUB_STEP_SUMMARY
-          fi
+          # Fallback: commit APK to build-artifacts branch
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
 
-          gh release create "$TAG" \
-            --repo ${{ github.repository }} \
-            --title "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" \
-            --notes "Automated debug build for commit $GITHUB_SHA" \
-            "$APK_FILE" \
-            "$SHA256_FILE"
+          BRANCH="build-artifacts"
+          ARTIFACT_PATH="apk/$(echo $GITHUB_SHA | cut -c1-7)"
+
+          mkdir -p "$ARTIFACT_PATH"
+          cp "$APK_FILE" "$ARTIFACT_PATH/"
+          cp "$SHA256_FILE" "$ARTIFACT_PATH/"
+          cp "$ARTIFACT_PATH"/*.apk "$ARTIFACT_PATH/termux-app-debug.apk"
+
+          git checkout --orphan "$BRANCH" 2>/dev/null || git checkout "$BRANCH" 2>/dev/null || true
+          git rm -rf . 2>/dev/null || true
+          git clean -fd 2>/dev/null || true
+
+          mv "$ARTIFACT_PATH"/* .
+          git add *.apk *.sha256
+          git commit -m "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" --allow-empty
+          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$BRANCH" --force 2>&1
+
+          echo "APK pushed to branch '$BRANCH'" >> $GITHUB_STEP_SUMMARY
