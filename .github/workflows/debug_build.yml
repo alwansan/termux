@@ -31,17 +31,25 @@ jobs:
           exit_on_error() { echo "$1"; exit 1; }
 
           echo "Setting vars"
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_REF=$GITHUB_REF"
 
           if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
               GITHUB_SHA="${{ github.event.pull_request.head.sha }}"
           fi
 
-          CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
+          CURRENT_VERSION_NAME_REGEX='\\s+versionName "([^"]+)"$'
           CURRENT_VERSION_NAME="$(grep -m 1 -E "$CURRENT_VERSION_NAME_REGEX" ./app/build.gradle | sed -r "s/$CURRENT_VERSION_NAME_REGEX/\1/")"
+          echo "CURRENT_VERSION_NAME=$CURRENT_VERSION_NAME"
           RELEASE_VERSION_NAME="v$CURRENT_VERSION_NAME+${GITHUB_SHA:0:7}"
-          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+          echo "RELEASE_VERSION_NAME=$RELEASE_VERSION_NAME"
+          echo "VERSION_CHECK=$(printf "%s" "${RELEASE_VERSION_NAME/v/}")"
+          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$'; then
+           echo "Version check FAILED" >&2
            exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec."
           fi
+          echo "Version check passed"
 
           APK_DIR_PATH="./app/build/outputs/apk/debug"
           APK_VERSION_TAG="$RELEASE_VERSION_NAME-$PACKAGE_VARIANT-github-debug"
@@ -56,8 +64,21 @@ jobs:
           export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
           export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
           mkdir -p "$APK_DIR_PATH"
+          
+          echo "Java version:"
+          java -version 2>&1 || echo "no java?"
+          
+          echo "Running gradlew..."
+          chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace --info 2>&1 | tee "$APK_DIR_PATH/build.log"
           GRADLE_EXIT=$?
+          echo "gradlew exit code: $GRADLE_EXIT"
+          
+          echo "### Gradle Build Output" >> $GITHUB_STEP_SUMMARY
+          echo '"'\'\'\'' >> $GITHUB_STEP_SUMMARY
+          cat "$APK_DIR_PATH/build.log" >> $GITHUB_STEP_SUMMARY || echo "no build log"
+          echo '"'\'\'\'' >> $GITHUB_STEP_SUMMARY
+          
           if [ $GRADLE_EXIT -ne 0 ]; then
             exit_on_error "Build failed for '$APK_VERSION_TAG' build."
           fi
@@ -73,8 +94,8 @@ jobs:
             exit_on_error "Generate sha256sum failed for '$APK_VERSION_TAG' build."
           fi
 
-      - name: Upload build log on failure
-        if: failure()
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: build-log
