@@ -53,7 +53,7 @@ jobs:
           CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
           CURRENT_VERSION_NAME="$(grep -m 1 -E "$CURRENT_VERSION_NAME_REGEX" ./app/build.gradle | sed -r "s/$CURRENT_VERSION_NAME_REGEX/\1/")"
           RELEASE_VERSION_NAME="v$CURRENT_VERSION_NAME+${GITHUB_SHA:0:7}"
-          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
            exit_on_error "Version check failed"
           fi
 
@@ -81,54 +81,28 @@ jobs:
             exit_on_error "Build failed (exit: $GRADLE_EXIT)"
           fi
 
-      - name: Show APK
-        if: success()
-        run: |
-          echo "## Build Succeeded!" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          find . -name '*.apk' -type f >> $GITHUB_STEP_SUMMARY
-          find . -path '*/build/outputs/*' -type f 2>/dev/null >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
       - name: Upload APK
         if: success()
         run: |
-          APK_FILE=$(find . -name '*.apk' -type f | head -1)
+          APK_FILE=$(find . -name '*arm64-v8a*.apk' -type f | head -1)
           if [ -z "$APK_FILE" ]; then
+            echo "No arm64-v8a APK found" >> $GITHUB_STEP_SUMMARY
+            find . -name '*.apk' -type f >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
+          echo "APK: $APK_FILE ($(stat -c%s "$APK_FILE") bytes)" >> $GITHUB_STEP_SUMMARY
 
           SHA256_FILE="${APK_FILE}.sha256"
           (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
 
           TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
 
-          # Try creating release with minimal flags
-          if command -v gh >/dev/null 2>&1; then
-            if gh auth status >/dev/null 2>&1; then
-              gh release create "$TAG" "$APK_FILE" "$SHA256_FILE" --repo ${{ github.repository }} --generate-notes && exit 0
-            fi
-          fi
+          gh release create "$TAG" \
+            --repo ${{ github.repository }} \
+            --title "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" \
+            --notes "Automated debug build for commit $GITHUB_SHA" \
+            --draft \
+            "$APK_FILE" \
+            "$SHA256_FILE"
 
-          # Fallback: commit APK to build-artifacts branch
-          git config user.email "github-actions@github.com"
-          git config user.name "GitHub Actions"
-
-          BRANCH="build-artifacts"
-          ARTIFACT_PATH="apk/$(echo $GITHUB_SHA | cut -c1-7)"
-
-          mkdir -p "$ARTIFACT_PATH"
-          cp "$APK_FILE" "$ARTIFACT_PATH/"
-          cp "$SHA256_FILE" "$ARTIFACT_PATH/"
-          cp "$ARTIFACT_PATH"/*.apk "$ARTIFACT_PATH/termux-app-debug.apk"
-
-          git checkout --orphan "$BRANCH" 2>/dev/null || git checkout "$BRANCH" 2>/dev/null || true
-          git rm -rf . 2>/dev/null || true
-          git clean -fd 2>/dev/null || true
-
-          mv "$ARTIFACT_PATH"/* .
-          git add *.apk *.sha256
-          git commit -m "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" --allow-empty
-          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$BRANCH" --force 2>&1
-
-          echo "APK pushed to branch '$BRANCH'" >> $GITHUB_STEP_SUMMARY
+          echo "Uploaded: https://github.com/${{ github.repository }}/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
