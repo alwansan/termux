@@ -39,9 +39,7 @@ jobs:
           ls -la $ANDROID_HOME/platforms/ 2>/dev/null | head -5
           ls -la $ANDROID_HOME/build-tools/ 2>/dev/null | head -5
           ls -la $ANDROID_HOME/ndk/ 2>/dev/null | head -5
-          # Accept licenses
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses 2>/dev/null || echo "License accept skipped"
-          # Find Java home
           echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))" >> $GITHUB_ENV
           echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))"
 
@@ -74,10 +72,10 @@ jobs:
           chmod +x ./gradlew
 
           echo "### Gradle Build" >> $GITHUB_STEP_SUMMARY
-          echo '"'\'\'\' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           ./gradlew assembleDebug --stacktrace 2>&1 | tee /dev/stderr >> $GITHUB_STEP_SUMMARY
           GRADLE_EXIT=$?
-          echo '"'\'\'\' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           if [ $GRADLE_EXIT -ne 0 ]; then
             echo "Gradle failed with exit code: $GRADLE_EXIT" >> $GITHUB_STEP_SUMMARY
             exit_on_error "Build failed (exit: $GRADLE_EXIT)"
@@ -87,5 +85,29 @@ jobs:
         if: success()
         run: |
           echo "## Build Succeeded!" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           find . -name '*.apk' -type f >> $GITHUB_STEP_SUMMARY
           find . -path '*/build/outputs/*' -type f 2>/dev/null >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload APK
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK_FILE="${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_arm64-v8a.apk"
+          if [ ! -f "$APK_FILE" ]; then
+            echo "APK not found at: $APK_FILE"
+            ls -la "${{ env.APK_DIR_PATH }}/" 2>/dev/null || echo "Dir not found"
+            exit 1
+          fi
+          SHA256_FILE="${APK_FILE}.sha256"
+          (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
+          gh release create "debug-${GITHUB_SHA:0:7}" \
+            --repo ${{ github.repository }} \
+            --title "Debug APK ${GITHUB_SHA:0:7}" \
+            --notes "Automated debug build for commit ${GITHUB_SHA}" \
+            --draft \
+            "$APK_FILE" \
+            "$SHA256_FILE"
+          echo "Uploaded: $APK_FILE" >> $GITHUB_STEP_SUMMARY
