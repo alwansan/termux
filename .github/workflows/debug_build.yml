@@ -92,22 +92,98 @@ jobs:
 
       - name: Upload APK
         if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          APK_FILE="${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_arm64-v8a.apk"
-          if [ ! -f "$APK_FILE" ]; then
-            echo "APK not found at: $APK_FILE"
-            ls -la "${{ env.APK_DIR_PATH }}/" 2>/dev/null || echo "Dir not found"
+          echo "### Upload APK debug" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          echo "GITHUB_REPOSITORY=${{ github.repository }}"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
+          echo "HOME=$HOME"
+
+          APK_DIR_PATH="$APK_DIR_PATH"
+          APK_BASENAME_PREFIX="$APK_BASENAME_PREFIX"
+
+          echo "APK_DIR_PATH=$APK_DIR_PATH"
+          echo "APK_BASENAME_PREFIX=$APK_BASENAME_PREFIX"
+
+          echo "--- Looking for APK files ---"
+          find . -name '*.apk' -type f 2>/dev/null
+          echo "--- List APK_DIR_PATH ---"
+          ls -la "$APK_DIR_PATH/" 2>/dev/null || echo "dir not found"
+          echo "--- End APK search ---"
+
+          APK_FILE=$(find . -name '*.apk' -type f | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: No APK file found"
+            echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
+          echo "Found APK: $APK_FILE"
+          echo "File size: $(stat -c%s "$APK_FILE" 2>/dev/null || echo 'unknown')"
+
           SHA256_FILE="${APK_FILE}.sha256"
           (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
-          gh release create "debug-${GITHUB_SHA:0:7}" \
-            --repo ${{ github.repository }} \
-            --title "Debug APK ${GITHUB_SHA:0:7}" \
-            --notes "Automated debug build for commit ${GITHUB_SHA}" \
-            --draft \
-            "$APK_FILE" \
-            "$SHA256_FILE"
-          echo "Uploaded: $APK_FILE" >> $GITHUB_STEP_SUMMARY
+          cat "$SHA256_FILE"
+
+          TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
+          GITHUB_TOKEN="${{ github.token }}"
+
+          echo "Creating release with tag=$TAG"
+          RELEASE_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            -d "$(cat <<-JSON
+          {
+            "tag_name": "$TAG",
+            "name": "Debug APK $(echo $GITHUB_SHA | cut -c1-7)",
+            "body": "Automated debug build for commit $GITHUB_SHA",
+            "draft": true
+          }
+          JSON
+          )")
+          HTTP_CODE=$(echo "$RELEASE_RESPONSE" | tail -1)
+          RELEASE_BODY=$(echo "$RELEASE_RESPONSE" | sed '$d')
+          echo "Release API response code: $HTTP_CODE"
+          echo "Release API response body: $(echo $RELEASE_BODY | head -5)"
+
+          if [ "$HTTP_CODE" != "201" ]; then
+            echo "WARNING: Release creation returned $HTTP_CODE, trying alternative..."
+            echo "Full response: $RELEASE_BODY"
+            ERR_MSG=$(echo "$RELEASE_BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('message',''))" 2>/dev/null || echo "")
+            echo "Error message: $ERR_MSG"
+          fi
+
+          RELEASE_ID=$(echo "$RELEASE_BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
+
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "None" ] && [ "$RELEASE_ID" != "0" ]; then
+            echo "Release created with ID: $RELEASE_ID"
+
+            echo "Uploading APK asset..."
+            UPLOAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Content-Type: application/vnd.android.package-archive" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=$(basename ${APK_FILE})" \
+              --data-binary "@${APK_FILE}")
+            echo "Upload APK response code: $UPLOAD_CODE"
+
+            echo "Uploading sha256 asset..."
+            SHA_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Content-Type: text/plain" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=$(basename ${SHA256_FILE})" \
+              --data-binary "@${SHA256_FILE}")
+            echo "Upload SHA response code: $SHA_CODE"
+
+            echo "Uploaded to release ID: $RELEASE_ID" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Could not create release."
+            echo "SHA256: $(cat $SHA256_FILE)" >> $GITHUB_STEP_SUMMARY
+            echo "APK file available at: $APK_FILE in the workspace"
+          fi
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
