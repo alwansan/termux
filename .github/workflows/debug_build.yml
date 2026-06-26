@@ -81,28 +81,58 @@ jobs:
             exit_on_error "Build failed (exit: $GRADLE_EXIT)"
           fi
 
-      - name: Upload APK
+      - name: Check gh
         if: success()
+        shell: bash {0}
         run: |
+          echo "## gh check" >> $GITHUB_STEP_SUMMARY
+          echo "gh: $(which gh 2>&1)" >> $GITHUB_STEP_SUMMARY
+          echo "version: $(gh --version 2>&1)" >> $GITHUB_STEP_SUMMARY
+          echo "auth: $(gh auth status 2>&1)" >> $GITHUB_STEP_SUMMARY
+          echo "token: ${GITHUB_TOKEN:0:4}..." >> $GITHUB_STEP_SUMMARY
+          echo "repo: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create Release
+        if: success()
+        shell: bash {0}
+        run: |
+          set -x
           APK_FILE=$(find . -name '*arm64-v8a*.apk' -type f | head -1)
-          if [ -z "$APK_FILE" ]; then
-            echo "No arm64-v8a APK found" >> $GITHUB_STEP_SUMMARY
-            find . -name '*.apk' -type f >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
-          echo "APK: $APK_FILE ($(stat -c%s "$APK_FILE") bytes)" >> $GITHUB_STEP_SUMMARY
+          echo "APK_FILE=$APK_FILE" >> $GITHUB_STEP_SUMMARY
+          [ -n "$APK_FILE" ] && echo "size: $(stat -c%s "$APK_FILE")" >> $GITHUB_STEP_SUMMARY
+
+          TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
+          echo "TAG=$TAG" >> $GITHUB_STEP_SUMMARY
+
+          gh api \
+            --method POST \
+            /repos/${{ github.repository }}/releases \
+            -f tag_name="$TAG" \
+            -f name="Debug APK ${GITHUB_SHA:0:7}" \
+            -f target_commitish="$GITHUB_SHA" \
+            -f draft=true \
+            2>&1 | tee -a $GITHUB_STEP_SUMMARY
+          echo "exit: $?" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload APK Asset
+        if: success()
+        shell: bash {0}
+        run: |
+          set -x
+          APK_FILE=$(find . -name '*arm64-v8a*.apk' -type f | head -1)
+          [ -z "$APK_FILE" ] && { echo "No APK" >> $GITHUB_STEP_SUMMARY; exit 1; }
 
           SHA256_FILE="${APK_FILE}.sha256"
           (cd "$(dirname "$APK_FILE")" && sha256sum "$(basename "$APK_FILE")" > "$(basename "$SHA256_FILE")")
 
           TAG="debug-$(echo $GITHUB_SHA | cut -c1-7)"
+          echo "Uploading assets for tag=$TAG" >> $GITHUB_STEP_SUMMARY
 
-          gh release create "$TAG" \
+          gh release upload "$TAG" \
             --repo ${{ github.repository }} \
-            --title "Debug APK $(echo $GITHUB_SHA | cut -c1-7)" \
-            --notes "Automated debug build for commit $GITHUB_SHA" \
-            --draft \
             "$APK_FILE" \
-            "$SHA256_FILE"
+            "$SHA256_FILE" \
+            2>&1 | tee -a $GITHUB_STEP_SUMMARY
+          echo "upload_exit: $?" >> $GITHUB_STEP_SUMMARY
 
-          echo "Uploaded: https://github.com/${{ github.repository }}/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
+          echo "Draft release: https://github.com/${{ github.repository }}/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
